@@ -531,118 +531,196 @@ services:
 
 
 # ============================================================
-#  命令行入口
+#  辅助：检测 Ollama 是否可用
+# ============================================================
+def _detect_ollama() -> str:
+    """检测本地 Ollama 是否运行，返回可用的模型名或空字符串"""
+    try:
+        import urllib.request
+        req = urllib.request.Request("http://localhost:11434/api/tags")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            models = [m.get('name', '') for m in data.get('models', [])]
+            for preferred in ['qwen2:72b', 'qwen2.5:72b', 'llama3:70b', 'deepseek-r1:70b']:
+                if preferred in models:
+                    return preferred
+            return models[0] if models else ''
+    except:
+        return ''
+
+
+def _quick_update_check():
+    """快速检查 GitHub 上的规则库是否有更新"""
+    try:
+        import urllib.request
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(script_dir, "rules.json"), 'r') as f:
+            local_ver = json.load(f).get('version', '0')
+        url = "https://raw.githubusercontent.com/berlin0212/ai-skill-sentinel/main/rules.json"
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            remote_ver = json.loads(resp.read().decode('utf-8')).get('version', '0')
+        if remote_ver != local_ver:
+            print(f"  {Colors.YELLOW}🆕 发现新版本: v{local_ver} → v{remote_ver}，运行 update_rules.py 更新{Colors.RESET}")
+        else:
+            print(f"  {Colors.GREEN}✓ 已是最新 (v{local_ver}){Colors.RESET}")
+    except:
+        print(f"  {Colors.DIM}跳过 (无网络){Colors.RESET}")
+
+
+# ============================================================
+#  命令行入口 — 一键全自动审计
 # ============================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="🛡️ AI-Skill Sentinel v2.0 — 本地 AI 技能安全审计工具",
+        description="🛡️ AI-Skill Sentinel v2.2 — 一键 AI 技能安全审计",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-使用示例:
-  扫描单个文件:      python3 sentinel.py ./SKILL.md
-  扫描整个 Skill 目录: python3 sentinel.py ./some-skill/
-  生成沙盒配置:      python3 sentinel.py ./some-skill/ --sandbox
-  启用 LLM 深度审计:  python3 sentinel.py ./SKILL.md --llm
-  指定 Ollama 模型:   python3 sentinel.py ./SKILL.md --llm --model qwen2:72b
+使用方法:
+  一键全自动审计:       python3 sentinel.py /path/to/skill/
+  跳过 LLM 审计:        python3 sentinel.py /path/to/skill/ --no-llm
+  离线模式:             python3 sentinel.py /path/to/skill/ --offline
+  仅自完整性校验:       python3 sentinel.py --self-check
+  重置完整性基准:       python3 sentinel.py --init-integrity
         """
     )
     parser.add_argument("target", nargs='?', help="待扫描的文件路径或 Skill 目录")
     parser.add_argument("--rules", default="rules.json", help="规则库路径 (默认: rules.json)")
-    parser.add_argument("--sandbox", action="store_true", help="为高风险 Skill 生成 Docker 沙盒配置")
-    parser.add_argument("--llm", action="store_true", help="启用本地 LLM 深度语义审计 (需要 Ollama)")
-    parser.add_argument("--model", default="llama3:8b", help="LLM 模型名称 (默认: llama3:8b)")
-    parser.add_argument("--output", metavar="FILE", help="将审计报告导出为 JSON 文件")
-    parser.add_argument("--self-check", action="store_true", help="仅运行自完整性校验（不扫描目标）")
-    parser.add_argument("--init-integrity", action="store_true", help="重新生成自完整性基准哈希")
+    parser.add_argument("--model", default=None, help="指定 LLM 模型 (默认: 自动检测)")
+    parser.add_argument("--no-llm", action="store_true", help="跳过 LLM 深度审计")
+    parser.add_argument("--no-sandbox", action="store_true", help="跳过沙盒自动生成")
+    parser.add_argument("--offline", action="store_true", help="离线模式，跳过更新检查")
+    parser.add_argument("--output", metavar="FILE", help="自定义 JSON 报告路径")
+    parser.add_argument("--self-check", action="store_true", help="仅运行自完整性校验")
+    parser.add_argument("--init-integrity", action="store_true", help="重新生成完整性基准")
     args = parser.parse_args()
 
-    print(f"\n{Colors.BOLD}🛡️  AI-Skill Sentinel v2.1 启动{Colors.RESET}")
-    print(f"{Colors.DIM}   \"安全不是产品，是过程。\"{Colors.RESET}\n")
+    print(f"\n{Colors.BOLD}🛡️  AI-Skill Sentinel v2.2 — 一键安全审计{Colors.RESET}")
+    print(f"{Colors.DIM}   \"安全不是产品，是过程。\"{Colors.RESET}")
+    print(f"{'─' * 60}\n")
 
-    # 初始化引擎
     sentinel = SkillSentinel(args.rules)
 
-    # --init-integrity: 重新生成基准哈希
+    # --init-integrity
     if args.init_integrity:
         hashes = sentinel.init_integrity()
-        print(f"{Colors.GREEN}✅ 自完整性基准已重新生成 ({len(hashes)} 个文件):{Colors.RESET}")
+        print(f"{Colors.GREEN}✅ 完整性基准已重建 ({len(hashes)} 个文件):{Colors.RESET}")
         for fname, h in sorted(hashes.items()):
             print(f"   {fname}: {h[:16]}...")
         return
 
-    # 自完整性校验（每次扫描前自动执行）
+    # ━━━ 步骤 1/6: 自完整性校验 ━━━
+    print(f"{Colors.BOLD}[1/6] 🔒 自完整性校验{Colors.RESET}")
     integrity = sentinel.self_integrity_check()
     if integrity['new_baseline']:
-        print(f"{Colors.GREEN}🔐 首次运行，已创建自完整性基准文件{Colors.RESET}")
+        print(f"  {Colors.GREEN}首次运行，已创建基准{Colors.RESET}")
     elif not integrity['ok']:
-        print(f"{Colors.RED}{Colors.BOLD}⚠️  自完整性校验失败！以下文件可能已被篡改：{Colors.RESET}")
+        print(f"  {Colors.RED}⚠️ 失败！{Colors.RESET}")
         for f in integrity['tampered']:
-            print(f"{Colors.RED}   ☢️  {f} — 哈希不匹配！{Colors.RESET}")
+            print(f"  {Colors.RED}  ☢️ {f} — 哈希不匹配{Colors.RESET}")
         for f in integrity['missing']:
-            print(f"{Colors.RED}   ❌  {f} — 文件缺失！{Colors.RESET}")
-        print(f"{Colors.RED}   建议: 从 GitHub 重新克隆代码，或运行 --init-integrity 重新基准{Colors.RESET}")
+            print(f"  {Colors.RED}  ❌ {f} — 缺失{Colors.RESET}")
         if not args.self_check:
-            print(f"{Colors.YELLOW}   继续扫描，但审计结果可能不可靠！{Colors.RESET}")
+            print(f"  {Colors.YELLOW}  继续扫描，但结果可能不可靠{Colors.RESET}")
     else:
-        print(f"{Colors.GREEN}🔒 自完整性校验通过{Colors.RESET}")
+        print(f"  {Colors.GREEN}✓ 通过{Colors.RESET}")
 
-    # 如果只是 --self-check，到此结束
     if args.self_check:
         return
-
-    # 需要 target 参数才能继续扫描
     if not args.target:
-        parser.error("请指定待扫描的文件或目录，或使用 --self-check / --init-integrity")
+        parser.error("请指定待扫描的文件或目录")
 
-    # 执行扫描
+    # ━━━ 步骤 2/6: 规则库更新检查 ━━━
+    print(f"\n{Colors.BOLD}[2/6] 📡 规则库更新检查{Colors.RESET}")
+    if args.offline:
+        print(f"  {Colors.DIM}跳过 (离线模式){Colors.RESET}")
+    else:
+        _quick_update_check()
+
+    # ━━━ 步骤 3/6: 深度扫描 ━━━
+    print(f"\n{Colors.BOLD}[3/6] 🔍 深度扫描{Colors.RESET}")
     sentinel.scan(args.target)
+    print(f"  扫描: {sentinel.files_scanned} 个文件 | 跳过: {sentinel.files_skipped} 个自身文件")
 
-    # 读取主文件内容 (用于 LLM)
+    # ━━━ 步骤 4/6: LLM 审计 ━━━
+    print(f"\n{Colors.BOLD}[4/6] 🤖 LLM 深度审计{Colors.RESET}")
+    use_llm = False
     skill_content = ""
-    if args.llm:
-        target = args.target
-        if os.path.isdir(target):
-            skill_md = os.path.join(target, "SKILL.md")
-            if os.path.exists(skill_md):
-                target = skill_md
-        if os.path.isfile(target):
-            with open(target, 'r', encoding='utf-8', errors='ignore') as f:
-                skill_content = f.read()
+    if args.no_llm:
+        print(f"  {Colors.DIM}跳过 (--no-llm){Colors.RESET}")
+    else:
+        ollama_model = args.model or _detect_ollama()
+        if ollama_model:
+            print(f"  {Colors.GREEN}✓ Ollama 已连接，模型: {ollama_model}{Colors.RESET}")
+            use_llm = True
+            target = args.target
+            if os.path.isdir(target):
+                for candidate in ['SKILL.md', 'README.md']:
+                    cpath = os.path.join(target, candidate)
+                    if os.path.exists(cpath):
+                        target = cpath
+                        break
+            if os.path.isfile(target):
+                with open(target, 'r', encoding='utf-8', errors='ignore') as f:
+                    skill_content = f.read()
+        else:
+            print(f"  {Colors.DIM}跳过 (Ollama 未运行){Colors.RESET}")
 
-    # 输出报告
-    sentinel.print_report(use_llm=args.llm, skill_content=skill_content)
+    # ━━━ 步骤 5/6: 审计报告 ━━━
+    print(f"\n{Colors.BOLD}[5/6] 📊 审计报告{Colors.RESET}")
+    sentinel.print_report(use_llm=use_llm, skill_content=skill_content)
 
-    # JSON 报告导出
+    # ━━━ 步骤 6/6: 自动化后续 ━━━
     score = min(sentinel.risk_score, 100)
-    if args.output:
-        report_data = {
-            "version": "2.1",
-            "timestamp": datetime.now().isoformat(),
-            "target": os.path.abspath(args.target),
-            "files_scanned": sentinel.files_scanned,
-            "risk_score": score,
-            "verdict": (
-                "SAFE" if score <= 15 else
-                "LOW_RISK" if score <= 40 else
-                "MEDIUM_RISK" if score <= 65 else
-                "HIGH_RISK" if score <= 85 else
-                "CRITICAL"
-            ),
-            "findings": sentinel.findings,
-            "suspicious_urls": list(set(sentinel.suspicious_urls)),
-            "positive_indicators": sentinel.positive_indicators,
-            "llm_audit": getattr(sentinel, '_llm_result', None)
-        }
-        with open(args.output, 'w', encoding='utf-8') as f:
-            json.dump(report_data, f, ensure_ascii=False, indent=2)
-        print(f"{Colors.GREEN}📄 JSON 报告已导出: {args.output}{Colors.RESET}")
+    print(f"{Colors.BOLD}[6/6] 🔧 自动化后续{Colors.RESET}")
 
-    # 沙盒生成
-    if args.sandbox:
+    # 6a. JSON 报告
+    if not args.output:
+        if os.path.isdir(args.target):
+            skill_name = os.path.basename(os.path.normpath(args.target))
+        else:
+            skill_name = os.path.splitext(os.path.basename(args.target))[0]
+        args.output = os.path.join(
+            os.path.dirname(os.path.abspath(args.target)),
+            f"sentinel-report-{skill_name}.json"
+        )
+
+    report_data = {
+        "version": "2.2",
+        "timestamp": datetime.now().isoformat(),
+        "target": os.path.abspath(args.target),
+        "files_scanned": sentinel.files_scanned,
+        "files_skipped": sentinel.files_skipped,
+        "risk_score": score,
+        "verdict": (
+            "SAFE" if score <= 15 else
+            "LOW_RISK" if score <= 40 else
+            "MEDIUM_RISK" if score <= 65 else
+            "HIGH_RISK" if score <= 85 else
+            "CRITICAL"
+        ),
+        "findings": sentinel.findings,
+        "suspicious_urls": list(set(sentinel.suspicious_urls)),
+        "positive_indicators": sentinel.positive_indicators,
+        "llm_audit": getattr(sentinel, '_llm_result', None),
+        "integrity_check": integrity
+    }
+    with open(args.output, 'w', encoding='utf-8') as f:
+        json.dump(report_data, f, ensure_ascii=False, indent=2)
+    print(f"  {Colors.GREEN}📄 报告: {args.output}{Colors.RESET}")
+
+    # 6b. 沙盒 (≥41分自动生成)
+    if score >= 41 and not args.no_sandbox:
         output_dir = args.target if os.path.isdir(args.target) else os.path.dirname(args.target)
         sentinel.generate_sandbox(output_dir)
+    elif score >= 41:
+        print(f"  {Colors.DIM}沙盒: 跳过 (--no-sandbox){Colors.RESET}")
+    else:
+        print(f"  {Colors.GREEN}🐳 沙盒: 不需要 (分数 {score} < 41){Colors.RESET}")
 
-    # 返回退出码 (方便 CI/CD 集成)
+    print(f"\n{'═' * 60}")
+    print(f"{Colors.BOLD}  ✅ 审计完成 — 风险评分: {score}/100{Colors.RESET}")
+    print(f"{'═' * 60}\n")
+
     sys.exit(1 if score >= 65 else 0)
 
 
