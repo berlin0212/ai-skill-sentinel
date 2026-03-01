@@ -16,10 +16,13 @@ import re
 import json
 import argparse
 import hashlib
+import shutil
 import subprocess
 import sys
 from typing import List, Dict, Tuple, Optional
 from datetime import datetime
+
+SANDBOX_DIR = '/tmp/sentinel-sandbox'
 
 # ============================================================
 #  颜色输出
@@ -381,38 +384,34 @@ class SkillSentinel:
     # ----------------------------------------------------------
     #  生成 Docker 沙盒配置
     # ----------------------------------------------------------
-    def generate_sandbox(self, output_dir: str):
-        """为高风险 Skill 生成 Docker 隔离运行环境"""
+    def generate_sandbox(self, target_path: str) -> str:
+        """
+        为 Skill 生成 Docker 隔离沙盒环境。
+        沙盒文件放在 /tmp/sentinel-sandbox/，不污染目标目录。
+        返回沙盒目录路径。
+        """
+        # 清理旧沙盒
+        if os.path.exists(SANDBOX_DIR):
+            shutil.rmtree(SANDBOX_DIR)
+        os.makedirs(SANDBOX_DIR, exist_ok=True)
+
+        abs_target = os.path.abspath(target_path)
+
         dockerfile_content = """# AI-Skill Sentinel 生成的安全沙盒
-# 用途: 在隔离环境中测试可疑的 AI Skill
 FROM node:20-alpine
-
-# 1. 移除危险二进制
 RUN rm -f /usr/bin/wget /sbin/apk 2>/dev/null || true
-
-# 2. 创建非特权用户
 RUN adduser -D -s /bin/sh sandboxuser
 USER sandboxuser
 WORKDIR /home/sandboxuser/skill
-
-# 3. 限制能力 (需在 docker run 时配合 --cap-drop=ALL)
-# 运行命令:
-#   docker build -t skill-sandbox -f Dockerfile.sandbox .
-#   docker run --rm -it \\
-#     --cap-drop=ALL \\
-#     --network=none \\
-#     --read-only \\
-#     --tmpfs /tmp:rw,noexec,nosuid \\
-#     -v $(pwd)/skill-to-test:/home/sandboxuser/skill:ro \\
-#     skill-sandbox sh
-
 CMD ["sh"]
 """
-        dockerfile_path = os.path.join(output_dir, "Dockerfile.sandbox")
+        dockerfile_path = os.path.join(SANDBOX_DIR, "Dockerfile.sandbox")
         with open(dockerfile_path, 'w') as f:
             f.write(dockerfile_content)
 
-        compose_content = """# AI-Skill Sentinel 安全沙盒 Docker Compose
+        compose_content = f"""# AI-Skill Sentinel 安全沙盒
+# 目标 Skill: {abs_target}
+# 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 version: "3.8"
 services:
   sandbox:
@@ -426,18 +425,15 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid
     volumes:
-      - ./skill-to-test:/home/sandboxuser/skill:ro
+      - {abs_target}:/home/sandboxuser/skill:ro
     stdin_open: true
     tty: true
 """
-        compose_path = os.path.join(output_dir, "docker-compose.sandbox.yml")
+        compose_path = os.path.join(SANDBOX_DIR, "docker-compose.sandbox.yml")
         with open(compose_path, 'w') as f:
             f.write(compose_content)
 
-        print(f"{Colors.GREEN}🐳 沙盒配置已生成:{Colors.RESET}")
-        print(f"   - {dockerfile_path}")
-        print(f"   - {compose_path}")
-        print(f"   使用方法: docker compose -f docker-compose.sandbox.yml run sandbox")
+        return SANDBOX_DIR
 
     # ----------------------------------------------------------
     #  打印审计报告
@@ -708,14 +704,14 @@ def main():
         json.dump(report_data, f, ensure_ascii=False, indent=2)
     print(f"  {Colors.GREEN}📄 报告: {args.output}{Colors.RESET}")
 
-    # 6b. 沙盒 (≥41分自动生成)
-    if score >= 41 and not args.no_sandbox:
-        output_dir = args.target if os.path.isdir(args.target) else os.path.dirname(args.target)
-        sentinel.generate_sandbox(output_dir)
-    elif score >= 41:
-        print(f"  {Colors.DIM}沙盒: 跳过 (--no-sandbox){Colors.RESET}")
+    # 6b. 沙盒 (始终生成，不管分数)
+    if not args.no_sandbox:
+        sandbox_path = sentinel.generate_sandbox(args.target)
+        print(f"  {Colors.GREEN}🐳 沙盒已就绪: {sandbox_path}/{Colors.RESET}")
+        print(f"  {Colors.DIM}   启动: cd {sandbox_path} && docker compose -f docker-compose.sandbox.yml run sandbox{Colors.RESET}")
+        print(f"  {Colors.DIM}   沙盒会在下次扫描时自动清理{Colors.RESET}")
     else:
-        print(f"  {Colors.GREEN}🐳 沙盒: 不需要 (分数 {score} < 41){Colors.RESET}")
+        print(f"  {Colors.DIM}沙盒: 跳过 (--no-sandbox){Colors.RESET}")
 
     print(f"\n{'═' * 60}")
     print(f"{Colors.BOLD}  ✅ 审计完成 — 风险评分: {score}/100{Colors.RESET}")
