@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-AI-Skill Sentinel v2.0 - 本地 AI 技能安全哨兵
+AI-Skill Sentinel v2.1 - 本地 AI 技能安全哨兵
 功能:
   1. 递归扫描整个 Skill 目录 (所有 .md, .sh, .py, .js 文件)
-  2. 上下文感知检测 (区分代码示例 vs 真实指令)
+  2. 上下文感知检测 (区分代码示例/注释 vs 真实指令)
   3. 多级风险评分 (Critical / High / Medium / Social Engineering)
   4. 外联域名白名单审计
   5. 沙盒 Dockerfile 自动生成
-  6. 本地 LLM 审计接口 (对接 Ollama API)
+  6. 本地 LLM 审计接口 (对接 Ollama API，结构化解析)
+  7. JSON 报告导出 (--output)
 """
 
 import os
@@ -94,9 +95,10 @@ class SkillSentinel:
             })
             return
 
-        # 标记代码块区域 (用于上下文感知)
+        # 标记代码块区域 + 注释行 (用于上下文感知)
         in_code_block = False
         code_block_lines = set()
+        comment_lines = set()
         for i, line in enumerate(lines):
             stripped = line.strip()
             if stripped.startswith('```'):
@@ -104,6 +106,9 @@ class SkillSentinel:
                 code_block_lines.add(i)
             elif in_code_block:
                 code_block_lines.add(i)
+            # 检测注释行: #, //, <!-- -->
+            elif stripped.startswith('#') or stripped.startswith('//') or stripped.startswith('<!--'):
+                comment_lines.add(i)
 
         # 1. 规则匹配
         for category_key, level_label in [
@@ -121,10 +126,17 @@ class SkillSentinel:
 
                 for match in matches:
                     line_num = content[:match.start()].count('\n')
-                    # 上下文感知：如果匹配出现在 Markdown 代码块内，降级处理
+                    # 上下文感知：代码块或注释行内的匹配，降权为 1/3
                     is_in_example = line_num in code_block_lines
-                    actual_score = rule['score'] // 3 if is_in_example else rule['score']
-                    context_note = " (出现在代码示例中，已降权)" if is_in_example else ""
+                    is_in_comment = line_num in comment_lines
+                    is_context_safe = is_in_example or is_in_comment
+                    actual_score = rule['score'] // 3 if is_context_safe else rule['score']
+                    if is_in_example:
+                        context_note = " (出现在代码示例中，已降权)"
+                    elif is_in_comment:
+                        context_note = " (出现在注释中，已降权)"
+                    else:
+                        context_note = ""
 
                     self.risk_score += actual_score
                     self.findings.append({
@@ -205,9 +217,27 @@ class SkillSentinel:
             )
             with urllib.request.urlopen(req, timeout=60) as resp:
                 result = json.loads(resp.read().decode('utf-8'))
-                return result.get('response', '')
+                raw_response = result.get('response', '')
+
+                # 尝试从 LLM 回复中提取结构化 JSON
+                try:
+                    # 支持 LLM 回复中包裹在 ```json ... ``` 里的情况
+                    json_match = re.search(r'\{[^{}]*"verdict"[^{}]*\}', raw_response, re.DOTALL)
+                    if json_match:
+                        parsed = json.loads(json_match.group())
+                        return {
+                            "verdict": parsed.get("verdict", "UNKNOWN"),
+                            "confidence": parsed.get("confidence", 0),
+                            "reasons": parsed.get("reasons", []),
+                            "raw": raw_response
+                        }
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+
+                # 解析失败则降级为原始文本
+                return {"verdict": "UNKNOWN", "confidence": 0, "reasons": [], "raw": raw_response}
         except Exception as e:
-            return f"⚠️ LLM 审计不可用 (Ollama 未运行或模型未下载): {e}"
+            return {"verdict": "ERROR", "confidence": 0, "reasons": [str(e)], "raw": ""}
 
     # ----------------------------------------------------------
     #  生成 Docker 沙盒配置
@@ -343,7 +373,16 @@ services:
         if use_llm and skill_content:
             print(f"\n  {Colors.BLUE}🤖 正在调用本地 LLM 进行深度语义审计...{Colors.RESET}")
             llm_result = self.llm_audit(skill_content)
-            print(f"  {Colors.BLUE}  LLM 分析结果: {llm_result}{Colors.RESET}")
+            if isinstance(llm_result, dict):
+                v = llm_result.get('verdict', 'UNKNOWN')
+                c = llm_result.get('confidence', 0)
+                v_color = Colors.GREEN if v == 'SAFE' else Colors.RED
+                print(f"  {v_color}  LLM 裁定: {v} (置信度: {c}%){Colors.RESET}")
+                for reason in llm_result.get('reasons', []):
+                    print(f"  {Colors.BLUE}    • {reason}{Colors.RESET}")
+            else:
+                print(f"  {Colors.BLUE}  LLM 分析结果: {llm_result}{Colors.RESET}")
+            self._llm_result = llm_result
 
         print(f"\n{'─' * 60}")
         print(f"  {Colors.BOLD}📋 建议操作: {action}{Colors.RESET}")
@@ -371,9 +410,10 @@ def main():
     parser.add_argument("--sandbox", action="store_true", help="为高风险 Skill 生成 Docker 沙盒配置")
     parser.add_argument("--llm", action="store_true", help="启用本地 LLM 深度语义审计 (需要 Ollama)")
     parser.add_argument("--model", default="llama3:8b", help="LLM 模型名称 (默认: llama3:8b)")
+    parser.add_argument("--output", metavar="FILE", help="将审计报告导出为 JSON 文件")
     args = parser.parse_args()
 
-    print(f"\n{Colors.BOLD}🛡️  AI-Skill Sentinel v2.0 启动{Colors.RESET}")
+    print(f"\n{Colors.BOLD}🛡️  AI-Skill Sentinel v2.1 启动{Colors.RESET}")
     print(f"{Colors.DIM}   \"安全不是产品，是过程。\"{Colors.RESET}\n")
 
     # 初始化引擎
@@ -397,13 +437,37 @@ def main():
     # 输出报告
     sentinel.print_report(use_llm=args.llm, skill_content=skill_content)
 
+    # JSON 报告导出
+    score = min(sentinel.risk_score, 100)
+    if args.output:
+        report_data = {
+            "version": "2.1",
+            "timestamp": datetime.now().isoformat(),
+            "target": os.path.abspath(args.target),
+            "files_scanned": sentinel.files_scanned,
+            "risk_score": score,
+            "verdict": (
+                "SAFE" if score <= 15 else
+                "LOW_RISK" if score <= 40 else
+                "MEDIUM_RISK" if score <= 65 else
+                "HIGH_RISK" if score <= 85 else
+                "CRITICAL"
+            ),
+            "findings": sentinel.findings,
+            "suspicious_urls": list(set(sentinel.suspicious_urls)),
+            "positive_indicators": sentinel.positive_indicators,
+            "llm_audit": getattr(sentinel, '_llm_result', None)
+        }
+        with open(args.output, 'w', encoding='utf-8') as f:
+            json.dump(report_data, f, ensure_ascii=False, indent=2)
+        print(f"{Colors.GREEN}📄 JSON 报告已导出: {args.output}{Colors.RESET}")
+
     # 沙盒生成
     if args.sandbox:
         output_dir = args.target if os.path.isdir(args.target) else os.path.dirname(args.target)
         sentinel.generate_sandbox(output_dir)
 
     # 返回退出码 (方便 CI/CD 集成)
-    score = min(sentinel.risk_score, 100)
     sys.exit(1 if score >= 65 else 0)
 
 
