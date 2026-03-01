@@ -1,5 +1,5 @@
 {
-    "version": "2.0.0",
+    "version": "2.0.1",
     "last_updated": "2026-03-01",
     "description": "AI-Skill Sentinel 威胁情报数据库 v2 - 合并 ClawHavoc 特征 + 扩展行为检测",
     "critical_patterns": [
