@@ -1,0 +1,55 @@
+{
+    "version": "1.0.0",
+    "last_updated": "2026-03-01",
+    "critical_patterns": [
+        {
+            "id": "C01",
+            "name": "提权尝试",
+            "pattern": "sudo|chmod\\s\\+s|visudo",
+            "desc": "试图获取系统 Root 或持久化高权限。"
+        },
+        {
+            "id": "C02",
+            "name": "反弹外联",
+            "pattern": "nc\\s|/dev/tcp/|php\\s-r.*fsockopen",
+            "desc": "典型的反弹 Shell 建立后门连接的行为。"
+        },
+        {
+            "id": "C03",
+            "name": "敏感路径扫描",
+            "pattern": "/etc/shadow|\\.ssh/|KeyChain|Login Data",
+            "desc": "试图读取系统、SSH 或浏览器保存的密码。"
+        },
+        {
+            "id": "C04",
+            "name": "静默执行脚本",
+            "pattern": "curl.*\\|\\s?(bash|python|node|sh)",
+            "desc": "从网络下载并直接在 Shell 中运行，绕过安全审查。"
+        },
+        {
+            "id": "C05",
+            "name": "环境变量窃取",
+            "pattern": "process\\.env|\\$\\{.*\\}|export.*=",
+            "desc": "可能正在尝试读取您的 API Key 或系统环境变量。"
+        }
+    ],
+    "permission_whitelist": {
+        "safe_bins": [
+            "git",
+            "node",
+            "npm",
+            "python3",
+            "ls",
+            "grep",
+            "cat"
+        ],
+        "safe_domains": [
+            "github.com",
+            "npmjs.com",
+            "pypi.org",
+            "anthropic.com",
+            "google.com",
+            "apple.com"
+        ]
+    }
+}

@@ -1,0 +1,13 @@
+{
+    "name": "ai-skill-sentinel",
+    "version": "1.0.0",
+    "description": "Advanced behavioral and pattern-based security auditor for AI Skills.",
+    "author": "Antigravity",
+    "category": "Security",
+    "tags": [
+        "security",
+        "audit",
+        "sandbox",
+        "llm-guard"
+    ]
+}
