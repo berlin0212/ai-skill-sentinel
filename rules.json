@@ -66,6 +66,14 @@
             "score": 50,
             "desc": "匹配 ClawHavoc 恶意活动中的假安装程序。",
             "mitre": "T1204.002 - User Execution: Malicious File"
+        },
+        {
+            "id": "C09",
+            "name": "已知恶意作者/上传者",
+            "pattern": "hightower6eu|maldev_user|claw_backdoor",
+            "score": 50,
+            "desc": "该 Skill 由已知发布恶意代码的账户上传。",
+            "mitre": "T1583.001 - Infrastructure: Domains"
         }
     ],
     "high_patterns": [
@@ -117,6 +125,14 @@
             "pattern": "ptrace|LD_PRELOAD|DYLD_INSERT|process_vm_writev|kill\\s+-9",
             "score": 30,
             "desc": "试图注入其他进程或逃避安全监控。"
+        },
+        {
+            "id": "H08",
+            "name": "WebSocket 跨源漏洞 (CVE-2026-25253)",
+            "pattern": "allowAllOrigins|no-origin-check|disable-websocket-security",
+            "score": 35,
+            "desc": "发现可能导致一键 RCE 的 WebSocket 配置缺陷。",
+            "mitre": "T1190 - Exploit Public-Facing Application"
         }
     ],
     "medium_patterns": [

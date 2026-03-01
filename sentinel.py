@@ -45,6 +45,17 @@ class SkillSentinel:
         with open(full_path, 'r', encoding='utf-8') as f:
             self.rules = json.load(f)
 
+        # 加载 IOC 黑名单 (无上限的 IP/域名库)
+        blacklist_path = os.path.join(script_dir, "ioc_blacklist.json")
+        if os.path.exists(blacklist_path):
+            with open(blacklist_path, 'r', encoding='utf-8') as f:
+                bl = json.load(f)
+            self.blacklist_ips = set(bl.get('malicious_ips', []))
+            self.blacklist_domains = set(bl.get('malicious_domains', []))
+        else:
+            self.blacklist_ips = set()
+            self.blacklist_domains = set()
+
         self.findings: List[Dict] = []
         self.risk_score: int = 0
         self.files_scanned: int = 0
@@ -76,6 +87,29 @@ class SkillSentinel:
                 if ext in self.SCAN_EXTENSIONS:
                     fpath = os.path.join(root, fname)
                     self._scan_single_file(fpath)
+
+        # 4. 后处理 - 针对 _meta.json 深度解析 (作者黑名单)
+        meta_path = os.path.join(dir_path, "_meta.json")
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, 'r') as mf:
+                    meta = json.load(mf)
+                    author = meta.get('author', meta.get('uploader', ''))
+                    if author:
+                        # 检查作者名是否符合恶意列表
+                        for rule in self.rules.get('critical_patterns', []):
+                            if rule['id'] == 'C09' and re.search(rule['pattern'], str(author), re.IGNORECASE):
+                                self.risk_score += rule['score']
+                                self.findings.append({
+                                    "level": "☠️ 致命",
+                                    "file": "_meta.json",
+                                    "line": 0,
+                                    "rule": rule['id'],
+                                    "msg": f"{rule['name']}: [{author}] 被识别为已知恶意开发者!",
+                                    "score": rule['score']
+                                })
+            except:
+                pass
 
     # ----------------------------------------------------------
     #  扫描单个文件
@@ -170,6 +204,28 @@ class SkillSentinel:
                         "msg": f"非白名单域名: {url}",
                         "score": 15
                     })
+
+        # 2.5 IOC 黑名单查找 (基于 ioc_blacklist.json, 无上限)
+        if self.blacklist_ips or self.blacklist_domains:
+            # 提取文件中的所有 IP 地址
+            found_ips = set(re.findall(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', content))
+            matched_ips = found_ips & self.blacklist_ips
+            for ip in matched_ips:
+                ip_pos = content.find(ip)
+                ip_line = content[:ip_pos].count('\n') if ip_pos >= 0 else 0
+                is_in_example = ip_line in code_block_lines
+                is_in_cmt = ip_line in comment_lines
+                score = 50 // 3 if (is_in_example or is_in_cmt) else 50
+                ctx = " (已降权)" if (is_in_example or is_in_cmt) else ""
+                self.risk_score += score
+                self.findings.append({
+                    "level": "☠️ 致命",
+                    "file": rel_path,
+                    "line": ip_line + 1,
+                    "rule": "IOC_IP",
+                    "msg": f"IOC 黑名单命中: {ip} — 已知恶意 C2/攻击基础设施{ctx}",
+                    "score": score
+                })
 
         # 3. 正面指标
         safe_bins = self.rules.get('whitelist', {}).get('safe_bins', [])

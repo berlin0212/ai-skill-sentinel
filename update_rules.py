@@ -22,6 +22,7 @@ from typing import Dict, List, Optional
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOCAL_RULES = os.path.join(SCRIPT_DIR, "rules.json")
+IOC_BLACKLIST = os.path.join(SCRIPT_DIR, "ioc_blacklist.json")
 BACKUP_DIR = os.path.join(SCRIPT_DIR, ".rules_backup")
 
 # ============================================================
@@ -104,8 +105,7 @@ def fetch_ioc_feeds() -> Dict[str, List[str]]:
         with urllib.request.urlopen(url, timeout=20) as resp:
             data = json.loads(resp.read().decode('utf-8'))
             ips = [entry.get("ip_address", "") for entry in data if entry.get("ip_address")]
-            # 只取最近的 50 个，避免规则库膨胀
-            result["malicious_ips"] = list(set(ips))[:50]
+            result["malicious_ips"] = list(set(ips))
             print(f"   ✓ 获取到 {len(result['malicious_ips'])} 个恶意 IP")
     except Exception as e:
         print(f"   ⚠️ abuse.ch IP 列表获取失败: {e}")
@@ -123,44 +123,48 @@ def fetch_ioc_feeds() -> Dict[str, List[str]]:
 
 
 def merge_ioc_to_rules(ioc_data: Dict[str, List[str]]) -> bool:
-    """将抓取到的 IOC 合并到现有规则库"""
-    with open(LOCAL_RULES, 'r', encoding='utf-8') as f:
-        rules = json.load(f)
+    """
+    将抓取到的 IOC 合并到 ioc_blacklist.json（无上限）。
+    rules.json 中的 C07 正则只保留几个标志性 IP 给人看。
+    """
+    # 1. 加载现有黑名单
+    if os.path.exists(IOC_BLACKLIST):
+        with open(IOC_BLACKLIST, 'r', encoding='utf-8') as f:
+            blacklist = json.load(f)
+    else:
+        blacklist = {"malicious_ips": [], "malicious_domains": []}
 
-    updated = False
+    existing_ips = set(blacklist.get("malicious_ips", []))
+    existing_domains = set(blacklist.get("malicious_domains", []))
 
-    # 合并恶意 IP 到 critical_patterns
-    if ioc_data.get("malicious_ips"):
-        # 找到现有的 C2 IP 规则
-        existing_c2_rule = None
-        for rule in rules.get("critical_patterns", []):
-            if rule["id"] == "C07":
-                existing_c2_rule = rule
-                break
+    # 2. 合并新 IP
+    new_ips = set(ioc_data.get("malicious_ips", [])) - existing_ips
+    new_domains = set(ioc_data.get("malicious_domains", [])) - existing_domains
 
-        if existing_c2_rule:
-            # 提取现有的 IP 列表
-            existing_ips = set(re.findall(r'\d+\.\d+\.\d+\.\d+', existing_c2_rule['pattern']))
-            new_ips = set(ioc_data["malicious_ips"]) - existing_ips
+    if not new_ips and not new_domains:
+        print(f"✅ 黑名单无新增条目 (当前共 {len(existing_ips)} 个 IP, {len(existing_domains)} 个域名)")
+        return False
 
-            if new_ips:
-                # 将新 IP 加入正则 (用 | 分隔, 转义点号)
-                all_ips = existing_ips | new_ips
-                # 只保留前 30 个，防止正则过长
-                ip_patterns = [ip.replace('.', '\\.') for ip in sorted(all_ips)[:30]]
-                existing_c2_rule['pattern'] = '|'.join(ip_patterns)
-                existing_c2_rule['desc'] = f"已知恶意 C2 服务器 IP ({len(ip_patterns)} 个)。最后更新: {datetime.now().strftime('%Y-%m-%d')}"
-                updated = True
-                print(f"🆕 新增 {len(new_ips)} 个恶意 IP 到规则 C07")
+    # 3. 全部写入 ioc_blacklist.json（无上限）
+    all_ips = sorted(existing_ips | new_ips)
+    all_domains = sorted(existing_domains | new_domains)
 
-    if updated:
-        _backup_current()
-        rules['last_updated'] = datetime.now().strftime('%Y-%m-%d')
-        with open(LOCAL_RULES, 'w', encoding='utf-8') as f:
-            json.dump(rules, f, ensure_ascii=False, indent=4)
-        print("✅ 规则库已更新并保存")
+    blacklist["malicious_ips"] = all_ips
+    blacklist["malicious_domains"] = all_domains
+    blacklist["last_updated"] = datetime.now().strftime('%Y-%m-%d')
+    blacklist["description"] = f"AI-Skill Sentinel IOC 黑名单 - 共 {len(all_ips)} 个恶意 IP, {len(all_domains)} 个恶意域名"
 
-    return updated
+    with open(IOC_BLACKLIST, 'w', encoding='utf-8') as f:
+        json.dump(blacklist, f, ensure_ascii=False, indent=2)
+
+    print(f"🆕 黑名单已更新:")
+    if new_ips:
+        print(f"   + {len(new_ips)} 个新恶意 IP (总计: {len(all_ips)})")
+    if new_domains:
+        print(f"   + {len(new_domains)} 个新恶意域名 (总计: {len(all_domains)})")
+    print(f"   文件: {IOC_BLACKLIST}")
+
+    return True
 
 
 # ============================================================
@@ -284,10 +288,24 @@ def main():
         with open(LOCAL_RULES, 'r', encoding='utf-8') as f:
             data = json.load(f)
         count = _count_rules(data)
-        print(f"  版本: {data.get('version', 'N/A')}")
-        print(f"  规则数: {count} 条")
+        print(f"  规则库版本: {data.get('version', 'N/A')}")
+        print(f"  检测规则数: {count} 条")
         print(f"  最后更新: {data.get('last_updated', 'N/A')}")
-        print(f"  文件路径: {LOCAL_RULES}")
+        print(f"  规则文件: {LOCAL_RULES}")
+
+        # 显示黑名单状态
+        if os.path.exists(IOC_BLACKLIST):
+            with open(IOC_BLACKLIST, 'r', encoding='utf-8') as f:
+                bl = json.load(f)
+            ip_count = len(bl.get('malicious_ips', []))
+            domain_count = len(bl.get('malicious_domains', []))
+            print(f"\n  🗑️  IOC 黑名单:")
+            print(f"  恶意 IP 数: {ip_count} 个")
+            print(f"  恶意域名数: {domain_count} 个")
+            print(f"  最后更新: {bl.get('last_updated', 'N/A')}")
+            print(f"  黑名单文件: {IOC_BLACKLIST}")
+        else:
+            print(f"\n  ⚠️  IOC 黑名单文件不存在，请运行 --fetch-ioc 初始化")
         return
 
     if args.install_cron:
