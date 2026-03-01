@@ -1,0 +1,46 @@
+# AI-Skill Sentinel - 威胁情报自动更新
+# 每天早上 8:00 (UTC) 自动从公开情报源抓取恶意 IP/域名，更新 rules.json 并提交
+
+name: 🔄 Auto Update Threat Intel
+
+on:
+  schedule:
+    # 每天 UTC 00:00 (北京时间 08:00) 自动运行
+    - cron: '0 0 * * *'
+  # 也支持手动触发 (在 GitHub Actions 页面点击 "Run workflow")
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+
+      - name: 🐍 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 📡 抓取威胁情报并更新规则库
+        run: python3 update_rules.py --fetch-ioc
+
+      - name: 📊 显示更新后的规则状态
+        run: python3 update_rules.py --status
+
+      - name: 📝 提交更新 (如果有变化)
+        run: |
+          git config user.name "AI-Skill Sentinel Bot"
+          git config user.email "sentinel-bot@users.noreply.github.com"
+          git add rules.json
+          # 只有 rules.json 有变化时才提交
+          if git diff --cached --quiet; then
+            echo "✅ 规则库无变化，跳过提交"
+          else
+            git commit -m "🔄 auto: update threat intel $(date +%Y-%m-%d)"
+            git push
+            echo "🆕 规则库已更新并推送"
+          fi
