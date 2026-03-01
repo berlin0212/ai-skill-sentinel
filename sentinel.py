@@ -15,6 +15,7 @@ import os
 import re
 import json
 import argparse
+import hashlib
 import subprocess
 import sys
 from typing import List, Dict, Tuple, Optional
@@ -71,6 +72,70 @@ class SkillSentinel:
 
         # 记录 Sentinel 自身所在目录（用于自排除）
         self._self_dir = os.path.normpath(script_dir)
+        self._integrity_path = os.path.join(script_dir, '.integrity.json')
+
+    # ----------------------------------------------------------
+    #  自完整性校验：检查自身文件是否被篡改
+    # ----------------------------------------------------------
+    def self_integrity_check(self) -> dict:
+        """
+        计算 Sentinel 自身所有核心文件的 SHA256 哈希，
+        与基准值对比。返回 {ok: bool, tampered: [...], missing: [...], new_baseline: bool}
+        """
+        current_hashes = {}
+        for fname in sorted(self.SELF_EXCLUDE_FILES):
+            fpath = os.path.join(self._self_dir, fname)
+            if os.path.exists(fpath):
+                current_hashes[fname] = self._sha256(fpath)
+
+        # 读取基准值
+        if os.path.exists(self._integrity_path):
+            with open(self._integrity_path, 'r') as f:
+                baseline = json.load(f)
+            baseline_hashes = baseline.get('hashes', {})
+
+            tampered = []
+            missing = []
+            for fname, expected_hash in baseline_hashes.items():
+                if fname not in current_hashes:
+                    missing.append(fname)
+                elif current_hashes[fname] != expected_hash:
+                    tampered.append(fname)
+
+            if tampered or missing:
+                return {'ok': False, 'tampered': tampered, 'missing': missing, 'new_baseline': False}
+            return {'ok': True, 'tampered': [], 'missing': [], 'new_baseline': False}
+        else:
+            # 首次运行，创建基准值
+            self._save_integrity(current_hashes)
+            return {'ok': True, 'tampered': [], 'missing': [], 'new_baseline': True}
+
+    def init_integrity(self):
+        """重新生成基准哈希值（更新代码后调用）"""
+        current_hashes = {}
+        for fname in sorted(self.SELF_EXCLUDE_FILES):
+            fpath = os.path.join(self._self_dir, fname)
+            if os.path.exists(fpath):
+                current_hashes[fname] = self._sha256(fpath)
+        self._save_integrity(current_hashes)
+        return current_hashes
+
+    def _save_integrity(self, hashes: dict):
+        data = {
+            'created': datetime.now().isoformat(),
+            'description': 'AI-Skill Sentinel 自完整性校验基准 (勿手动修改)',
+            'hashes': hashes
+        }
+        with open(self._integrity_path, 'w') as f:
+            json.dump(data, f, indent=2)
+
+    @staticmethod
+    def _sha256(filepath: str) -> str:
+        h = hashlib.sha256()
+        with open(filepath, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                h.update(chunk)
+        return h.hexdigest()
 
     # ----------------------------------------------------------
     #  入口：扫描文件或目录
@@ -481,12 +546,14 @@ def main():
   指定 Ollama 模型:   python3 sentinel.py ./SKILL.md --llm --model qwen2:72b
         """
     )
-    parser.add_argument("target", help="待扫描的文件路径或 Skill 目录")
+    parser.add_argument("target", nargs='?', help="待扫描的文件路径或 Skill 目录")
     parser.add_argument("--rules", default="rules.json", help="规则库路径 (默认: rules.json)")
     parser.add_argument("--sandbox", action="store_true", help="为高风险 Skill 生成 Docker 沙盒配置")
     parser.add_argument("--llm", action="store_true", help="启用本地 LLM 深度语义审计 (需要 Ollama)")
     parser.add_argument("--model", default="llama3:8b", help="LLM 模型名称 (默认: llama3:8b)")
     parser.add_argument("--output", metavar="FILE", help="将审计报告导出为 JSON 文件")
+    parser.add_argument("--self-check", action="store_true", help="仅运行自完整性校验（不扫描目标）")
+    parser.add_argument("--init-integrity", action="store_true", help="重新生成自完整性基准哈希")
     args = parser.parse_args()
 
     print(f"\n{Colors.BOLD}🛡️  AI-Skill Sentinel v2.1 启动{Colors.RESET}")
@@ -494,6 +561,38 @@ def main():
 
     # 初始化引擎
     sentinel = SkillSentinel(args.rules)
+
+    # --init-integrity: 重新生成基准哈希
+    if args.init_integrity:
+        hashes = sentinel.init_integrity()
+        print(f"{Colors.GREEN}✅ 自完整性基准已重新生成 ({len(hashes)} 个文件):{Colors.RESET}")
+        for fname, h in sorted(hashes.items()):
+            print(f"   {fname}: {h[:16]}...")
+        return
+
+    # 自完整性校验（每次扫描前自动执行）
+    integrity = sentinel.self_integrity_check()
+    if integrity['new_baseline']:
+        print(f"{Colors.GREEN}🔐 首次运行，已创建自完整性基准文件{Colors.RESET}")
+    elif not integrity['ok']:
+        print(f"{Colors.RED}{Colors.BOLD}⚠️  自完整性校验失败！以下文件可能已被篡改：{Colors.RESET}")
+        for f in integrity['tampered']:
+            print(f"{Colors.RED}   ☢️  {f} — 哈希不匹配！{Colors.RESET}")
+        for f in integrity['missing']:
+            print(f"{Colors.RED}   ❌  {f} — 文件缺失！{Colors.RESET}")
+        print(f"{Colors.RED}   建议: 从 GitHub 重新克隆代码，或运行 --init-integrity 重新基准{Colors.RESET}")
+        if not args.self_check:
+            print(f"{Colors.YELLOW}   继续扫描，但审计结果可能不可靠！{Colors.RESET}")
+    else:
+        print(f"{Colors.GREEN}🔒 自完整性校验通过{Colors.RESET}")
+
+    # 如果只是 --self-check，到此结束
+    if args.self_check:
+        return
+
+    # 需要 target 参数才能继续扫描
+    if not args.target:
+        parser.error("请指定待扫描的文件或目录，或使用 --self-check / --init-integrity")
 
     # 执行扫描
     sentinel.scan(args.target)
