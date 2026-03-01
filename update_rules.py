@@ -19,6 +19,7 @@ import json
 import re
 from datetime import datetime
 from typing import Dict, List, Optional
+import subprocess
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOCAL_RULES = os.path.join(SCRIPT_DIR, "rules.json")
@@ -157,14 +158,51 @@ def merge_ioc_to_rules(ioc_data: Dict[str, List[str]]) -> bool:
     with open(IOC_BLACKLIST, 'w', encoding='utf-8') as f:
         json.dump(blacklist, f, ensure_ascii=False, indent=2)
 
+    # 4. 自动升级 rules.json 的版本号（若有变化）
+    with open(LOCAL_RULES, 'r', encoding='utf-8') as f:
+        rules = json.load(f)
+    
+    current_ver = rules.get('version', '0.0.0')
+    v_parts = current_ver.split('.')
+    if len(v_parts) == 3:
+        v_parts[-1] = str(int(v_parts[-1]) + 1)
+        new_ver = '.'.join(v_parts)
+    else:
+        new_ver = current_ver + ".1"
+    
+    rules['version'] = new_ver
+    rules['last_updated'] = datetime.now().strftime('%Y-%m-%d')
+    
+    with open(LOCAL_RULES, 'w', encoding='utf-8') as f:
+        json.dump(rules, f, ensure_ascii=False, indent=4)
+
     print(f"🆕 黑名单已更新:")
     if new_ips:
         print(f"   + {len(new_ips)} 个新恶意 IP (总计: {len(all_ips)})")
     if new_domains:
         print(f"   + {len(new_domains)} 个新恶意域名 (总计: {len(all_domains)})")
+    print(f"   版本号已提升: v{current_ver} → v{new_ver}")
     print(f"   文件: {IOC_BLACKLIST}")
 
     return True
+
+
+def git_commit_changes():
+    """将更改提交并推送到 GitHub (用于 GitHub Actions)"""
+    print("\n📦 正在将更改提交到 Git...")
+    try:
+        commands = [
+            ["git", "config", "--global", "user.name", "Sentinel Updater"],
+            ["git", "config", "--global", "user.email", "sentinel@bot.local"],
+            ["git", "add", "rules.json", "ioc_blacklist.json"],
+            ["git", "commit", "-m", f"chore: automated threat intelligence update {datetime.now().strftime('%Y-%m-%d')}"],
+            ["git", "push"]
+        ]
+        for cmd in commands:
+            subprocess.run(cmd, check=True)
+        print("✅ Git 提交成功")
+    except Exception as e:
+        print(f"⚠️ Git 提交失败 (可能无更改或未授权): {e}")
 
 
 # ============================================================
@@ -279,6 +317,8 @@ def main():
                         help="安装每日自动更新的定时任务 (macOS/Linux)")
     parser.add_argument("--status", action="store_true",
                         help="查看当前规则库状态")
+    parser.add_argument("--commit", action="store_true",
+                        help="更新后自动 git commit & push (仅限 CI/CD 环境)")
     args = parser.parse_args()
 
     print(f"\n🔄 AI-Skill Sentinel 威胁情报更新器")
@@ -316,10 +356,15 @@ def main():
     github_updated = update_from_github()
 
     # 2. 公开情报抓取
+    ioc_updated = False
     if args.fetch_ioc:
         print()
         ioc_data = fetch_ioc_feeds()
-        merge_ioc_to_rules(ioc_data)
+        ioc_updated = merge_ioc_to_rules(ioc_data)
+
+    # 3. 自动提交
+    if args.commit and (github_updated or ioc_updated):
+        git_commit_changes()
 
     print(f"\n{'─' * 45}")
     print("✅ 更新完成\n")
