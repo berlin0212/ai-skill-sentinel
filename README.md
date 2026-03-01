@@ -70,23 +70,32 @@ python3 sentinel.py /path/to/skill/ --llm --model qwen2:72b
 ## 🔍 检测能力覆盖
 
 ### 致命级 (8 条)
-- C01: 提权尝试 (sudo, chmod +s, setuid)
-- C02: 反弹 Shell (nc, /dev/tcp, mkfifo)
-- C03: 敏感路径扫描 (SSH 密钥, 浏览器密码, KeyChain)
-- C04: 静默远程执行 (curl | bash)
-- C05: Base64 隐藏载荷
-- C06: 动态代码执行 (eval, exec, new Function)
-- C07: 已知恶意 C2 服务器 IP (ClawHavoc 攻击特征)
-- C08: ClawHavoc 假安装包
+```
+C01: 提权尝试 (sudo, chmod +s, setuid)
+C02: 反弹 Shell (nc, /dev/tcp, mkfifo)
+C03: 敏感路径扫描 (SSH 密钥, 浏览器密码, KeyChain)
+C04: 静默远程执行 (curl | bash)
+C05: Base64 隐藏载荷
+C06: 动态代码执行 (eval, exec, new Function)
+C07: 已知恶意 C2 服务器 IP (ClawHavoc 攻击特征)
+C08: ClawHavoc 假安装包
+```
 
 ### 高危级 (7 条)
-- H01-H07: 可疑二进制下载、SSH 密钥操作、加密货币钱包、环境变量窃取、定时任务注入、DNS 隧道、进程注入
+```
+H01-H07: 可疑二进制下载、SSH 密钥操作、加密货币钱包、
+         环境变量窃取、定时任务注入、DNS 隧道、进程注入
+```
 
 ### 中危级 (5 条)
-- M01-M05: 文件写操作、网络监听端口、子进程生成、文件权限修改、打包操作
+```
+M01-M05: 文件写操作、网络监听端口、子进程生成、文件权限修改、打包操作
+```
 
 ### 社工级 (3 条)
-- S01-S03: 紧迫催促语言、虚假权威声明、恐吓战术
+```
+S01-S03: 紧迫催促语言、虚假权威声明、恐吓战术
+```
 
 ## 🧠 上下文感知引擎
 

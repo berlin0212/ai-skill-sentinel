@@ -38,6 +38,12 @@ class Colors:
 class SkillSentinel:
     SCAN_EXTENSIONS = {'.md', '.sh', '.py', '.js', '.ts', '.json', '.yaml', '.yml', '.toml'}
 
+    # 自排除：扫描时跳过 Sentinel 自身的文件，防止误报
+    SELF_EXCLUDE_FILES = {
+        'sentinel.py', 'update_rules.py', 'rules.json',
+        'ioc_blacklist.json', 'README.md', 'SKILL.md', '_meta.json'
+    }
+
     def __init__(self, rules_path: str):
         script_dir = os.path.dirname(os.path.abspath(__file__))
         full_path = rules_path if os.path.isabs(rules_path) else os.path.join(script_dir, rules_path)
@@ -59,8 +65,12 @@ class SkillSentinel:
         self.findings: List[Dict] = []
         self.risk_score: int = 0
         self.files_scanned: int = 0
+        self.files_skipped: int = 0
         self.suspicious_urls: List[str] = []
         self.positive_indicators: List[str] = []
+
+        # 记录 Sentinel 自身所在目录（用于自排除）
+        self._self_dir = os.path.normpath(script_dir)
 
     # ----------------------------------------------------------
     #  入口：扫描文件或目录
@@ -115,8 +125,16 @@ class SkillSentinel:
     #  扫描单个文件
     # ----------------------------------------------------------
     def _scan_single_file(self, file_path: str):
-        self.files_scanned += 1
         rel_path = os.path.basename(file_path)
+        abs_path = os.path.normpath(os.path.abspath(file_path))
+
+        # 自排除：跳过 Sentinel 自身的文件
+        file_dir = os.path.dirname(abs_path)
+        if file_dir == self._self_dir and rel_path in self.SELF_EXCLUDE_FILES:
+            self.files_skipped += 1
+            return
+
+        self.files_scanned += 1
 
         try:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -386,6 +404,8 @@ services:
         print(f"{'═' * 60}")
         print(f"  审计时间: {now}")
         print(f"  扫描文件: {self.files_scanned} 个")
+        if self.files_skipped > 0:
+            print(f"  {Colors.DIM}已跳过: {self.files_skipped} 个 (Sentinel 自身文件){Colors.RESET}")
         print(f"{'─' * 60}")
         print(f"  {Colors.BOLD}风险评分: {score}/100{Colors.RESET}")
         print(f"  {Colors.BOLD}最终裁定: {verdict}{Colors.RESET}")
