@@ -1,9 +1,10 @@
 {
-  "last_updated": "2026-03-01",
-  "description": "AI-Skill Sentinel IOC 黑名单 - 共 5 个恶意 IP, 0 个恶意域名",
+  "last_updated": "2026-03-05",
+  "description": "AI-Skill Sentinel IOC 黑名单 - 共 6 个恶意 IP, 0 个恶意域名",
   "malicious_ips": [
     "1.1.1.1",
     "185.196.8.51",
+    "27.133.154.218",
     "34.204.119.63",
     "45.133.1.20",
     "91.92.242.30"
